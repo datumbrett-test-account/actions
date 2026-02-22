@@ -117,7 +117,9 @@ jobs:
 
       - name: Summary
         run: |
-          echo "### Published ${{ steps.version.outputs.new-version }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Package: \`${{ inputs.package-name }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "Registry: https://www.npmjs.com/package/${{ inputs.package-name }}" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "### Published ${{ steps.version.outputs.new-version }}"
+            echo ""
+            echo "Package: \`${{ inputs.package-name }}\`"
+            echo "Registry: https://www.npmjs.com/package/${{ inputs.package-name }}"
+          } >> "$GITHUB_STEP_SUMMARY"
