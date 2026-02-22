@@ -1,0 +1,125 @@
+name: Publish npm Package
+
+on:
+  workflow_call:
+    inputs:
+      package-name:
+        required: true
+        type: string
+        description: "The npm package name (e.g. `@datum-cloud/datum-ui`)"
+      package-path:
+        required: true
+        type: string
+        description: "Path to the package directory relative to the repo root (e.g. `packages/datum-ui`)"
+      node-version:
+        required: false
+        type: number
+        description: "Node.js version to use"
+        default: 24
+    outputs:
+      new-version:
+        description: "The new version that was published (e.g. `v1.2.3`)"
+        value: ${{ jobs.publish.outputs.new-version }}
+
+jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    # Skip the bot commit that this workflow itself creates when bumping the
+    # version. The committer name for GITHUB_TOKEN pushes is "github-actions[bot]".
+    if: github.actor != 'github-actions[bot]'
+    outputs:
+      package: ${{ steps.filter.outputs.package }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check changed paths
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            package:
+              - '${{ inputs.package-path }}/**'
+
+  publish:
+    name: Publish to npm
+    needs: changes
+    if: needs.changes.outputs.package == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # needed to push the version bump commit and tag
+      id-token: write  # needed for npm trusted publishing (OIDC)
+    outputs:
+      new-version: ${{ steps.version.outputs.new-version }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Determine version bump type from PR labels
+        id: bump-type
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Find the PR that was merged into this commit and read its labels.
+          # Falls back to "patch" if no relevant label is found.
+          PR_LABELS=$(gh pr list \
+            --state merged \
+            --base main \
+            --search "${{ github.sha }}" \
+            --json labels \
+            --jq '.[0].labels[].name' 2>/dev/null || true)
+
+          if echo "$PR_LABELS" | grep -q "release:major"; then
+            echo "type=major" >> "$GITHUB_OUTPUT"
+          elif echo "$PR_LABELS" | grep -q "release:minor"; then
+            echo "type=minor" >> "$GITHUB_OUTPUT"
+          else
+            echo "type=patch" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure git for version bump commit
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Bump version and create git tag
+        id: version
+        working-directory: ${{ inputs.package-path }}
+        run: |
+          NEW_VERSION=$(npm version ${{ steps.bump-type.outputs.type }} \
+            --message "chore: release ${{ inputs.package-name }} v%s [skip ci]")
+          echo "new-version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Push version bump commit and tag
+        run: git push origin main --follow-tags
+
+      - name: Build package
+        run: pnpm --filter ${{ inputs.package-name }} build
+
+      - name: Publish to npm
+        working-directory: ${{ inputs.package-path }}
+        run: pnpm publish --no-git-checks --access public --provenance
+
+      - name: Summary
+        run: |
+          {
+            echo "### Published ${{ steps.version.outputs.new-version }}"
+            echo ""
+            echo "Package: \`${{ inputs.package-name }}\`"
+            echo "Registry: https://www.npmjs.com/package/${{ inputs.package-name }}"
+          } >> "$GITHUB_STEP_SUMMARY"
